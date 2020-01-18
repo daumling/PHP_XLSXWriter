@@ -104,6 +104,11 @@ class XLSXWriter
 		$zip->addEmptyDir("xl/worksheets/");
 		foreach($this->sheets as $sheet) {
 			$zip->addFile($sheet->filename, "xl/worksheets/".$sheet->xmlname );
+			$relXml = $this->buildSheetRelationsXml($sheet->sheetname);
+			if ($relXml) {
+				$zip->addEmptyDir("xl/worksheets/_rels/");
+				$zip->addFromString("xl/worksheets/_rels/".$sheet->xmlname.".rels", $relXml);
+			}
 		}
 		$zip->addFromString("xl/workbook.xml"         , self::buildWorkbookXML() );
 		$zip->addFile($this->writeStylesXML(), "xl/styles.xml" );  //$zip->addFromString("xl/styles.xml"           , self::buildStylesXML() );
@@ -136,13 +141,14 @@ class XLSXWriter
 			'freeze_rows' => $freeze_rows,
 			'freeze_columns' => $freeze_columns,
 			'finalized' => false,
+			'header_rows' => 0
 		);
 		$rightToLeftValue = $this->isRightToLeft ? 'true' : 'false';
 		$sheet = &$this->sheets[$sheet_name];
 		$tabselected = count($this->sheets) == 1 ? 'true' : 'false';//only first sheet is selected
 		$max_cell=XLSXWriter::xlsCell(self::EXCEL_2007_MAX_ROW, self::EXCEL_2007_MAX_COL);//XFE1048577
 		$sheet->file_writer->write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n");
-		$sheet->file_writer->write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">');
+		$sheet->file_writer->write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac">');
 		$sheet->file_writer->write(  '<sheetPr filterMode="false">');
 		$sheet->file_writer->write(    '<pageSetUpPr fitToPage="false"/>');
 		$sheet->file_writer->write(  '</sheetPr>');
@@ -170,6 +176,8 @@ class XLSXWriter
 		}
 		$sheet->file_writer->write(    '</sheetView>');
 		$sheet->file_writer->write(  '</sheetViews>');
+		$sheet->file_writer->write(  '<sheetFormatPr baseColWidth="10" defaultRowHeight="16" x14ac:dyDescent="0.2" />
+');
 		$sheet->file_writer->write(  '<cols>');
 		$i=0;
 		if (!empty($col_widths)) {
@@ -195,17 +203,19 @@ class XLSXWriter
 	{
 		$column_types = array();
 		foreach($header_types as $v)
-		{
-			$number_format = self::numberFormatStandardized($v);
-			$number_format_type = self::determineNumberFormatType($number_format);
-			$cell_style_idx = $this->addCellStyle($number_format, $style_string=null);
-			$column_types[] = array('number_format' => $number_format,//contains excel format like 'YYYY-MM-DD HH:MM:SS'
-									'number_format_type' => $number_format_type, //contains friendly format like 'datetime'
-									'default_cell_style' => $cell_style_idx,
-									);
-		}
+            $column_types[] = $this->initializeColumnType($v);
 		return $column_types;
 	}
+
+    private function initializeColumnType($type) {
+        $number_format = self::numberFormatStandardized($type);
+        $number_format_type = $this->determineNumberFormatType($number_format);
+        $cell_style_idx = $this->addCellStyle($number_format, $style_string=null);
+        return array('number_format' => $number_format,//contains excel format like 'YYYY-MM-DD HH:MM:SS'
+                     'number_format_type' => $number_format_type, //contains friendly format like 'datetime'
+                     'default_cell_style' => $cell_style_idx,
+        );
+    }
 
 	public function writeSheetHeader($sheet_name, array $header_types, $col_options = null)
 	{
@@ -231,53 +241,61 @@ class XLSXWriter
 		{
 			$header_row = array_keys($header_types);      
 
-			$sheet->file_writer->write('<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . (1) . '">');
+			$sheet->file_writer->write('<row r="1" spans="1:1">');
 			foreach ($header_row as $c => $v) {
 				$cell_style_idx = empty($style) ? $sheet->columns[$c]['default_cell_style'] : $this->addCellStyle( 'GENERAL', json_encode(isset($style[0]) ? $style[$c] : $style) );
-				$this->writeCell($sheet->file_writer, 0, $c, $v, $number_format_type='n_string', $cell_style_idx);
+				$this->writeCell($sheet->file_writer, $sheet_name, 0, $c, $v, $number_format_type='n_string', $cell_style_idx);
 			}
 			$sheet->file_writer->write('</row>');
 			$sheet->row_count++;
+			$sheet->header_rows++;
 		}
 		$this->current_sheet = $sheet_name;
 	}
 
-	public function writeSheetRow($sheet_name, array $row, $row_options=null)
+	public function writeSheetRow($sheet_name, array $row, $row_options=null, $row_num = -1)
 	{
 		if (empty($sheet_name))
 			return;
-
+			
 		$this->initializeSheet($sheet_name);
 		$sheet = &$this->sheets[$sheet_name];
+		if ($row_num < 0)
+			$row_num = $sheet->row_count;
+		$row_num += $sheet->header_rows;
 		if (count($sheet->columns) < count($row)) {
 			$default_column_types = $this->initializeColumnTypes( array_fill($from=0, $until=count($row), 'GENERAL') );//will map to n_auto
 			$sheet->columns = array_merge((array)$sheet->columns, $default_column_types);
 		}
 		
-		if (!empty($row_options))
-		{
-			$ht = isset($row_options['height']) ? floatval($row_options['height']) : 12.1;
-			$customHt = isset($row_options['height']) ? true : false;
-			$hidden = isset($row_options['hidden']) ? (bool)($row_options['hidden']) : false;
-			$collapsed = isset($row_options['collapsed']) ? (bool)($row_options['collapsed']) : false;
-			$sheet->file_writer->write('<row collapsed="'.($collapsed).'" customFormat="false" customHeight="'.($customHt).'" hidden="'.($hidden).'" ht="'.($ht).'" outlineLevel="0" r="' . ($sheet->row_count + 1) . '">');
-		}
-		else
-		{
-			$sheet->file_writer->write('<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($sheet->row_count + 1) . '">');
-		}
+		$ht = isset($row_options['height']) 
+				? ' customHeight="true"' : '';
+		$customHt = isset($row_options['height']) 
+				? ' customHeight="'.floatval($row_options['height']).'"' : '';
+		$hidden = isset($row_options['hidden']) 
+				? ' hidden="'.(bool)($row_options['hidden']).'"' : '';
+		$collapsed = isset($row_options['collapsed']) 
+				? ' collapsed="'.(bool)($row_options['collapsed']).'"' : '';
+		$sheet->file_writer->write('<row'.$collapsed.$ht.$customHt.$hidden.$collapsed.' r="' . ($row_num + 1) . '" spans="1:1">');
 
 		$style = &$row_options;
-		$c=0;
-		foreach ($row as $v) {
-			$number_format = $sheet->columns[$c]['number_format'];
-			$number_format_type = $sheet->columns[$c]['number_format_type'];
-			$cell_style_idx = empty($style) ? $sheet->columns[$c]['default_cell_style'] : $this->addCellStyle( $number_format, json_encode(isset($style[0]) ? $style[$c] : $style) );
-			$this->writeCell($sheet->file_writer, $sheet->row_count, $c, $v, $number_format_type, $cell_style_idx);
-			$c++;
+		foreach ($row as $c => $v) {
+            // see if we have a cell format
+            $cf = $sheet->columns[$c];
+            $cs = empty($style) ? $cf['default_cell_style']
+                : (isset($style[$c]) ? $style[$c] : $style);
+            if (isset($cs['format'])) {
+                $cf = $this->initializeColumnType($cs['format']);
+				$cs = array_slice($cs, 0, count($cs), true);
+				unset($cs['format']);
+			}
+			$number_format = $cf['number_format'];
+			$number_format_type = $cf['number_format_type'];
+			$cell_style_idx = empty($style) ? $cf['default_cell_style'] : $this->addCellStyle( $number_format, json_encode($cs) );
+			$this->writeCell($sheet->file_writer, $sheet_name, $row_num, $c, $v, $number_format_type, $cell_style_idx);
 		}
 		$sheet->file_writer->write('</row>');
-		$sheet->row_count++;
+		$sheet->row_count = $row_num + 1;
 		$this->current_sheet = $sheet_name;
 	}
 
@@ -309,6 +327,10 @@ class XLSXWriter
 		if ($sheet->auto_filter) {
 			$sheet->file_writer->write(    '<autoFilter ref="A1:' . $max_cell . '"/>');			
 		}
+        
+		$xml = $this->buildMoreSheetXml($sheet_name);
+		if ($xml)
+	        $sheet->file_writer->write($xml);
 
 		$sheet->file_writer->write(    '<printOptions headings="false" gridLines="false" gridLinesSet="true" horizontalCentered="false" verticalCentered="false"/>');
 		$sheet->file_writer->write(    '<pageMargins left="0.5" right="0.5" top="1.0" bottom="1.0" header="0.5" footer="0.5"/>');
@@ -350,16 +372,19 @@ class XLSXWriter
 		}
 		foreach($data as $i=>$row)
 		{
-			$this->writeSheetRow($sheet_name, $row);
+			$this->writeSheetRow($sheet_name, $row, $i);
 		}
 		$this->finalizeSheet($sheet_name);
 	}
 
-	protected function writeCell(XLSXWriter_BuffererWriter &$file, $row_number, $column_number, $value, $num_format_type, $cell_style_idx)
+	protected function writeCell(XLSXWriter_BuffererWriter &$file, $sheet_name, $row_number, $column_number, $value, $num_format_type, $cell_style_idx)
 	{
 		$cell_name = self::xlsCell($row_number, $column_number);
 
-		if (!is_scalar($value) || $value==='') { //objects, array, empty
+		$xml = $this->buildCellXml($sheet_name, $row_number, $column_number, $value, $num_format_type, $cell_style_idx);
+		if ($xml)
+			$file->write($xml);
+		else if (!is_scalar($value) || $value==='') { //objects, array, empty
 			$file->write('<c r="'.$cell_name.'" s="'.$cell_style_idx.'"/>');
 		} elseif (is_string($value) && $value[0]=='='){
 			$file->write('<c r="'.$cell_name.'" s="'.$cell_style_idx.'" t="s"><f>'.self::xmlspecialchars($value).'</f></c>');
@@ -695,8 +720,10 @@ class XLSXWriter
 		$content_types_xml="";
 		$content_types_xml.='<?xml version="1.0" encoding="UTF-8"?>'."\n";
 		$content_types_xml.='<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">';
-		$content_types_xml.='<Override PartName="/_rels/.rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
-		$content_types_xml.='<Override PartName="/xl/_rels/workbook.xml.rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
+    	$content_types_xml.='<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />';
+    	$content_types_xml.='<Default Extension="xml" ContentType="application/xml" />';
+//		$content_types_xml.='<Override PartName="/_rels/.rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
+//		$content_types_xml.='<Override PartName="/xl/_rels/workbook.xml.rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
 		foreach($this->sheets as $sheet_name=>$sheet) {
 			$content_types_xml.='<Override PartName="/xl/worksheets/'.($sheet->xmlname).'" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>';
 		}
@@ -710,6 +737,15 @@ class XLSXWriter
 	}
 
 	//------------------------------------------------------------------
+    // Overloadables
+	//------------------------------------------------------------------
+
+	protected function buildCellXml(string $sheet_name, int $row_number, int $column_number, string $value, string $num_format_type, int $cell_style_idx) { return ''; }
+    protected function buildMoreSheetXml(string $sheet_name) { return ''; }
+	protected function buildSheetRelationsXml(string $sheet_name) { return ''; }
+
+	//------------------------------------------------------------------
+
 	/*
 	 * @param $row_number int, zero based
 	 * @param $column_number int, zero based
@@ -767,10 +803,14 @@ class XLSXWriter
 		return $first_key;
 	}
 	//------------------------------------------------------------------
-	private static function determineNumberFormatType($num_format)
+
+	// Overloadable
+
+	protected function determineNumberFormatType(string $num_format)
 	{
 		$num_format = preg_replace("/\[(Black|Blue|Cyan|Green|Magenta|Red|White|Yellow)\]/i", "", $num_format);
 		if ($num_format=='GENERAL') return 'n_auto';
+		if ($num_format=='LINK') return 'n_link';
 		if ($num_format=='@') return 'n_string';
 		if ($num_format=='0') return 'n_numeric';
 		if (preg_match('/[H]{1,2}:[M]{1,2}(?![^"]*+")/i', $num_format)) return 'n_datetime';
