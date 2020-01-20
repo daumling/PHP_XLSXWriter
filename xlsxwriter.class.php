@@ -281,7 +281,7 @@ class XLSXWriter
 		$style = &$row_options;
 		foreach ($row as $c => $v) {
             // see if we have a cell format
-            $cf = $sheet->columns[$c];
+            $cf = $sheet->columns[$c] ?? $this->initializeColumnType('GENERAL');
             $cs = empty($style) ? $cf['default_cell_style']
                 : (isset($style[$c]) ? $style[$c] : $style);
             if (isset($cs['format'])) {
