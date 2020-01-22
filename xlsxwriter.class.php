@@ -694,6 +694,7 @@ class XLSXWriter
 				$i++;	
 			}
 		}
+		$workbook_xml.=$this->addDefinedNamesXml();
 		$workbook_xml.='</definedNames>';
 		$workbook_xml.='<calcPr iterateCount="100" refMode="A1" iterate="false" iterateDelta="0.001"/></workbook>';
 		return $workbook_xml;
@@ -743,7 +744,8 @@ class XLSXWriter
 	protected function buildCellXml(string $sheet_name, int $row_number, int $column_number, string $value, string $num_format_type, int $cell_style_idx) { return ''; }
     protected function buildMoreSheetXml(string $sheet_name) { return ''; }
 	protected function buildSheetRelationsXml(string $sheet_name) { return ''; }
-
+	protected function addDefinedNamesXml() { return ''; }
+	
 	//------------------------------------------------------------------
 
 	/*
